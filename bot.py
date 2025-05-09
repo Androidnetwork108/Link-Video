@@ -61,7 +61,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("bot.log", mode='a', encoding='utf-8')
+        logging.FileHandler("bot.log", mode='a', encoding='utf-8') # यह Railway पर काम नहीं करेगा ठीक से, लेकिन लोकल के लिए ठीक है
     ]
 )
 logger = logging.getLogger(__name__)
@@ -137,11 +137,18 @@ async def run_ffmpeg(command: list) -> bool:
         stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await process.communicate()
+    # <<<--- पहला बदलाव यहाँ ---<<<
     if process.returncode != 0:
         logger.error(f"FFmpeg Error (Code {process.returncode}): {stderr.decode(errors='ignore').strip()}")
+        logger.info(f"FFmpeg stdout (on error): {stdout.decode(errors='ignore').strip()[:500]}") # एरर पर stdout भी देखो
         return False
-    logger.info(f"FFmpeg Success (first 200 chars of stdout): {stdout.decode(errors='ignore').strip()[:200]}")
-    return True
+    else: # <<<--- यह else ब्लॉक और इसके अंदर की लाइनें नई हैं ---<<<
+        logger.info(f"FFmpeg Success! stdout: {stdout.decode(errors='ignore').strip()[:500]}")
+        logger.info(f"FFmpeg stderr (on success, if any): {stderr.decode(errors='ignore').strip()[:500]}")
+        return True
+    # logger.info(f"FFmpeg Success (first 200 chars of stdout): {stdout.decode(errors='ignore').strip()[:200]}") # यह पुरानी लाइन थी
+    # return True # यह पुरानी लाइन थी
+    # <<<-----------------------<<<
 
 user_interaction_states = {}
 
@@ -689,37 +696,57 @@ async def button_handler(client: Client, query: CallbackQuery):
                 reply_markup=final_ui, reply_to_message_id=reply_to_msg_id )
 
             extracted_audio_file_for_both = os.path.join(DOWNLOAD_DIR, f"{title_final}_{original_user_id}_audio_extract.mp3")
-            try: await client.edit_message_text(chat_id, interaction_key, "Extracting audio for 'Both'... 🔊")
-            except Exception: pass
+            # <<<--- दूसरा बदलाव यहाँ ---<<<
+            logger.info(f"Attempting to extract audio for 'Both' to: {extracted_audio_file_for_both}") # यह नई लाइन
+            try:
+                await client.edit_message_text(chat_id, interaction_key, "Extracting audio for 'Both'... 🔊")
+            except Exception:
+                pass # यह पहले से था
 
             ffmpeg_command = [
                 'ffmpeg', '-i', final_output_file, '-vn', '-acodec', 'libmp3lame',
-                '-b:a', '192k', '-ar', '44100', '-y', extracted_audio_file_for_both ]
-            if await run_ffmpeg(ffmpeg_command) and os.path.exists(extracted_audio_file_for_both):
-                audio_filesize_str = sizeof_fmt(os.path.getsize(extracted_audio_file_for_both))
-                audio_caption = f"🎬 **Title:** `{title_final} (Audio)`\n⏱️ **Duration:** `{duration_str}` | 💾 **Size:** `{audio_filesize_str}`\n🥀 **Requested by:** {query.from_user.mention}\n👤 **Creator:** @Hindu_papa ✓"
-                await client.send_audio(
-                    chat_id=chat_id, audio=extracted_audio_file_for_both,
-                    caption=f"**🔊 Audio Part!**\n\n{audio_caption}",
-                    title=title_final[:30], duration=int(duration_seconds or 0),
-                    reply_markup=final_ui, reply_to_message_id=reply_to_msg_id )
-            else:
-                logger.error(f"FFmpeg failed or extracted audio not found for 'Both' for user {original_user_id} (interaction {interaction_key}). Video path was: {final_output_file}")
-                await client.send_message(chat_id, "⚠️ Failed to extract audio for 'Both', but video was sent.", reply_to_message_id=reply_to_msg_id)
-
-        try: await client.delete_messages(chat_id, interaction_key) # Delete the "Choose format" message
-        except Exception: pass
+                '-b:a', '192k', '-ar', '44100', '-y', extracted_audio_file_for_both
+            ]
+            if await run_ffmpeg(ffmpeg_command): # यह लाइन बदली गई है ताकि run_ffmpeg के सफल होने का इंतज़ार किया जाए
+                if os.path.exists(extracted_audio_file_for_both): # और फिर फाइल की मौजूदगी चेक की जाए
+                    logger.info(f"Audio extracted successfully for 'Both': {extracted_audio_file_for_both}") # यह नई लाइन
+                    audio_filesize_str = sizeof_fmt(os.path.getsize(extracted_audio_file_for_both))
+                    audio_caption = f"🎬 **Title:** `{title_final} (Audio)`\n⏱️ **Duration:** `{duration_str}` | 💾 **Size:** `{audio_filesize_str}`\n🥀 **Requested by:** {query.from_user.mention}\n👤 **Creator:** @Hindu_papa ✓"
+                    await client.send_audio(
+                        chat_id=chat_id, audio=extracted_audio_file_for_both,
+                        caption=f"**🔊 Audio Part!**\n\n{audio_caption}",
+                        title=title_final[:30], duration=int(duration_seconds or 0),
+                        reply_markup=final_ui, reply_to_message_id=reply_to_msg_id
+                    )
+                else: # यह else ब्लॉक नया है
+                    logger.error(f"FFmpeg seemed to succeed for 'Both', but extracted audio file NOT FOUND at: {extracted_audio_file_for_both}")
+                    try:
+                        logger.info(f"Contents of {DOWNLOAD_DIR} after ffmpeg for 'Both': {os.listdir(DOWNLOAD_DIR)}")
+                    except Exception as e_ls:
+                        logger.error(f"Could not list {DOWNLOAD_DIR}: {e_ls}")
+                    await client.send_message(chat_id, "⚠️ Failed to process audio for 'Both' (file not found after extraction), but video was sent.", reply_to_message_id=reply_to_msg_id)
+            else: # यह else ब्लॉक नया है
+                logger.error(f"FFmpeg command failed for 'Both' for user {original_user_id} (interaction {interaction_key}). Video path was: {final_output_file}")
+                try:
+                    logger.info(f"Contents of {DOWNLOAD_DIR} after failed ffmpeg for 'Both': {os.listdir(DOWNLOAD_DIR)}")
+                except Exception as e_ls:
+                    logger.error(f"Could not list {DOWNLOAD_DIR}: {e_ls}")
+                await client.send_message(chat_id, "⚠️ Failed to extract audio for 'Both' (ffmpeg error), but video was sent.", reply_to_message_id=reply_to_msg_id)
+            # <<<--------------------------<<<
+        try:
+            await client.delete_messages(chat_id, interaction_key) # Delete the "Choose format" message
+        except Exception:
+            pass
 
     except FloodWait as fw:
         logger.warning(f"FloodWait for {fw.value}s in button_handler for user {original_user_id} (interaction {interaction_key}). Waiting...")
         await asyncio.sleep(fw.value + 1)
-    except (UserIsBlocked, InputUserDeactivated, PeerIdInvalid, ChatWriteForbidden):
-        logger.warning(f"User {original_user_id} (interaction {interaction_key}) blocked bot, is deactivated, or chat/user ID is invalid/bot cannot write to chat.")
+    except (UserIsBlocked, InputUserDeactivated, PeerIdInvalid, ChatWriteForbidden) as e: # एक्सेप्शन का नाम e दिया
+        logger.warning(f"User {original_user_id} (interaction {interaction_key}) blocked bot, is deactivated, or chat/user ID is invalid/bot cannot write to chat: {type(e).__name__}") # e का इस्तेमाल किया
         if original_user_id in subscribed_users:
             subscribed_users.discard(original_user_id)
             save_users(subscribed_users)
-        # If it's a group chat issue, it might be handled by broadcast cleanup, but good to log.
-        if interaction_data["chat_id"] in active_groups and isinstance(e, (ChatWriteForbidden, PeerIdInvalid)):
+        if interaction_data["chat_id"] in active_groups and isinstance(e, (ChatWriteForbidden, PeerIdInvalid)): # e का इस्तेमाल किया
             logger.info(f"Removing group {interaction_data['chat_id']} due to {type(e).__name__} during button handler.")
             active_groups.discard(interaction_data["chat_id"])
             save_groups(active_groups)
@@ -727,30 +754,27 @@ async def button_handler(client: Client, query: CallbackQuery):
     except Exception as e:
         logger.error(f"Overall error in button_handler for user {original_user_id} (interaction {interaction_key}): {e}", exc_info=True)
         try:
-            # Try to edit the status message first
-            if interaction_key in user_interaction_states and query.message: # Ensure message still exists
+            if interaction_key in user_interaction_states and query.message:
                  await client.edit_message_text(chat_id, interaction_key, f"❌ A critical error occurred: `{str(e)[:250]}`")
-            else: # If status message is gone, reply to original message
+            else:
                 await client.send_message(chat_id, f"❌ A critical error occurred with your request. Please try again or contact admin if issue persists.", reply_to_message_id=interaction_data.get("original_message_id"))
         except Exception as e_reply:
             logger.error(f"Failed to even send error message to user {original_user_id} (interaction {interaction_key}): {e_reply}")
     finally:
-        # Cleanup downloaded files
         files_to_clean = []
         if original_downloaded_file and os.path.exists(original_downloaded_file):
             files_to_clean.append(original_downloaded_file)
         if extracted_audio_file_for_both and os.path.exists(extracted_audio_file_for_both):
             files_to_clean.append(extracted_audio_file_for_both)
         
-        # Add the potentially postprocessed audio file name (if different from original_downloaded_file)
         if choice == "audio" and ydl_opts.get('postprocessors') and original_downloaded_file:
             base, _ = os.path.splitext(original_downloaded_file)
             expected_audio_file = base + "." + ydl_opts['postprocessors'][0]['preferredcodec']
             if expected_audio_file != original_downloaded_file and os.path.exists(expected_audio_file):
                 files_to_clean.append(expected_audio_file)
 
-        for f_path in set(files_to_clean): # Use set to avoid trying to delete same file twice
-            if f_path and os.path.exists(f_path): # Double check existence before attempting removal
+        for f_path in set(files_to_clean): 
+            if f_path and os.path.exists(f_path): 
                 try:
                     os.remove(f_path)
                     logger.info(f"Cleaned: {f_path} (interaction {interaction_key})")
@@ -764,9 +788,7 @@ async def button_handler(client: Client, query: CallbackQuery):
 if __name__ == "__main__":
     logger.info("Bot starting up...")
     try:
-        # Pyrogram's app.run() handles the asyncio loop.
-        app.run() # This is a blocking call until the bot is stopped.
-        # Code here will run after bot stops.
+        app.run() 
         logger.info("Bot has been stopped gracefully.")
     except RuntimeError as e:
         if "another loop" in str(e).lower() or "different loop" in str(e).lower():
@@ -779,5 +801,4 @@ if __name__ == "__main__":
         logger.critical(f"An unexpected error occurred at the top level, causing bot to stop: {e}", exc_info=True)
     finally:
         logger.info("Script execution finished. Cleaning up if necessary.")
-        # Perform any final cleanup here if needed, though Pyrogram's stop should handle most.
 
