@@ -37,5 +37,6 @@ yt-dlp==2025.4.30
 python-dotenv
 pyrogram
 tgcrypto
-yt-dlp>=2025.4.30
+yt-dlp==2025.5.6.232932.dev0
+
 
