@@ -1,4 +1,3 @@
-# ★It's Maked by:- @Hindu_papa✓
 from dotenv import load_dotenv
 load_dotenv()
 import asyncio
