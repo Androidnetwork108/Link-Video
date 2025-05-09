@@ -1,0 +1,6 @@
+# nixpacks.toml
+[phases.setup]
+aptPkgs = ["ffmpeg"]
+
+[start]
+cmd = "bot.py"
