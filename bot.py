@@ -147,7 +147,6 @@ async def help_command(client: Client, msg: Message):
     except (UserIsBlocked, InputUserDeactivated): logger.warning(f"User {msg.from_user.id} blocked/deactivated during /help.")
     except Exception as e: logger.error(f"Error in /help: {e}", exc_info=True)
 
-# ★★★ पूरा ब्रॉडकास्ट फंक्शन ★★★
 @app.on_message(filters.command(["broadcast", "podcast"]) & filters.user(OWNER_ID))
 async def broadcast_command_handler(client: Client, msg: Message):
     if not msg.reply_to_message and len(msg.command) < 2:
@@ -156,131 +155,76 @@ async def broadcast_command_handler(client: Client, msg: Message):
             "1. Reply to a message with `/broadcast` or `/podcast` (to forward the replied message).\n"
             "2. Use `/broadcast <your message text>` or `/podcast <your message text>` (to send new text).\n\n"
             "This will send the message to all subscribed users (PM) and all active groups where the bot is a member.",
-            quote=True
-        )
-        return
+            quote=True); return
 
-    broadcast_content_message = None
-    broadcast_text_content = ""
-    
+    broadcast_content_message = None; broadcast_text_content = ""
     if msg.reply_to_message:
         broadcast_content_message = msg.reply_to_message
-        logger.info(f"Admin {msg.from_user.id} initiated broadcast by replying to message {broadcast_content_message.id} from chat {broadcast_content_message.chat.id}.")
+        logger.info(f"Admin {msg.from_user.id} initiated broadcast by reply: msg_id {broadcast_content_message.id}")
     else:
         broadcast_text_content = msg.text.split(" ", 1)[1].strip()
         if not broadcast_text_content:
-             await msg.reply_text("Please provide a message to broadcast or reply to a message.", quote=True)
-             return
+             await msg.reply_text("Please provide a message to broadcast or reply to a message.", quote=True); return
         logger.info(f"Admin {msg.from_user.id} initiated broadcast with text: {broadcast_text_content[:70]}...")
 
     if not subscribed_users and not active_groups:
-        await msg.reply_text("No users or groups to broadcast to.", quote=True)
-        return
+        await msg.reply_text("No users or groups to broadcast to.", quote=True); return
 
-    status_update_msg = await msg.reply_text(
-        f"🚀 **Starting Broadcast**\n"
-        f"Targeting: {len(subscribed_users)} users and {len(active_groups)} groups.\n"
-        f"This may take a while...",
-        quote=True
-    )
+    status_msg_text = f"🚀 **Starting Broadcast**\nTargeting: {len(subscribed_users)} users, {len(active_groups)} groups.\nThis may take a while..."
+    status_update_msg = await msg.reply_text(status_msg_text, quote=True)
 
-    successful_user_sends = 0
-    failed_user_sends = 0
-    successful_group_sends = 0
-    failed_group_sends = 0
-    
-    users_to_remove_post_broadcast = set()
-    groups_to_remove_post_broadcast = set()
+    s_users, f_users, s_groups, f_groups = 0,0,0,0
+    removed_users, removed_groups = set(), set()
 
-    # Broadcast to Users
+    async def send_to_entity(entity_id, is_group=False):
+        nonlocal s_users, f_users, s_groups, f_groups # Allow modification of outer scope vars
+        try:
+            if broadcast_content_message: await broadcast_content_message.forward(chat_id=entity_id)
+            elif broadcast_text_content: await client.send_message(entity_id, broadcast_text_content)
+            if is_group: s_groups += 1
+            else: s_users += 1
+            return True
+        except FloodWait as fw:
+            logger.warning(f"FloodWait for {fw.value}s for {'group' if is_group else 'user'} {entity_id}. Sleeping...")
+            await asyncio.sleep(fw.value + 5)
+            return await send_to_entity(entity_id, is_group) # Retry
+        except (UserIsBlocked, InputUserDeactivated, PeerIdInvalid, ChatWriteForbidden, UserNotParticipant) as e:
+            logger.warning(f"{'Group' if is_group else 'User'} {entity_id} error: {type(e).__name__}. Removing.")
+            if is_group: removed_groups.add(entity_id); f_groups +=1
+            else: removed_users.add(entity_id); f_users +=1
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending to {'group' if is_group else 'user'} {entity_id}: {e}", exc_info=True)
+            if is_group: f_groups +=1
+            else: f_users +=1
+            return False
+
     if subscribed_users:
         logger.info(f"Broadcasting to {len(subscribed_users)} users...")
-        for user_id in list(subscribed_users): # Iterate over a copy
-            try:
-                if broadcast_content_message:
-                    await broadcast_content_message.forward(chat_id=user_id)
-                elif broadcast_text_content:
-                    await client.send_message(user_id, broadcast_text_content)
-                successful_user_sends += 1
-            except FloodWait as fw:
-                logger.warning(f"FloodWait for {fw.value}s for user {user_id}. Sleeping...")
-                await asyncio.sleep(fw.value + 5)
-                try: # Retry after sleep
-                    if broadcast_content_message: await broadcast_content_message.forward(chat_id=user_id)
-                    elif broadcast_text_content: await client.send_message(user_id, broadcast_text_content)
-                    successful_user_sends += 1
-                except Exception as retry_e:
-                    logger.error(f"Retry failed for user {user_id} after FloodWait: {retry_e}")
-                    users_to_remove_post_broadcast.add(user_id)
-                    failed_user_sends += 1
-            except (UserIsBlocked, InputUserDeactivated, PeerIdInvalid) as e:
-                logger.warning(f"User {user_id} blocked/deactivated/invalid. Removing. Error: {type(e).__name__}")
-                users_to_remove_post_broadcast.add(user_id)
-                failed_user_sends += 1
-            except Exception as e:
-                logger.error(f"Unexpected error sending to user {user_id}: {e}", exc_info=True)
-                failed_user_sends += 1 # Don't remove for unknown errors immediately
-            await asyncio.sleep(0.2) # Short delay between messages
+        for user_id in list(subscribed_users):
+            await send_to_entity(user_id, is_group=False)
+            await asyncio.sleep(0.25) # Rate limiting
 
-    # Broadcast to Groups
     if active_groups:
         logger.info(f"Broadcasting to {len(active_groups)} groups...")
-        for group_id in list(active_groups): # Iterate over a copy
-            try:
-                if broadcast_content_message:
-                    await broadcast_content_message.forward(chat_id=group_id)
-                elif broadcast_text_content:
-                    await client.send_message(group_id, broadcast_text_content)
-                successful_group_sends += 1
-            except FloodWait as fw:
-                logger.warning(f"FloodWait for {fw.value}s for group {group_id}. Sleeping...")
-                await asyncio.sleep(fw.value + 5)
-                try: # Retry after sleep
-                    if broadcast_content_message: await broadcast_content_message.forward(chat_id=group_id)
-                    elif broadcast_text_content: await client.send_message(group_id, broadcast_text_content)
-                    successful_group_sends += 1
-                except Exception as retry_e:
-                    logger.error(f"Retry failed for group {group_id} after FloodWait: {retry_e}")
-                    if isinstance(retry_e, (ChatWriteForbidden, UserNotParticipant, PeerIdInvalid)):
-                        groups_to_remove_post_broadcast.add(group_id)
-                    failed_group_sends += 1
-            except (ChatWriteForbidden, UserNotParticipant, PeerIdInvalid) as e:
-                logger.warning(f"Cannot write to group {group_id} or bot not participant/invalid. Removing. Error: {type(e).__name__}")
-                groups_to_remove_post_broadcast.add(group_id)
-                failed_group_sends += 1
-            except Exception as e:
-                logger.error(f"Unexpected error sending to group {group_id}: {e}", exc_info=True)
-                if "chat_admin_required" in str(e).lower():
-                     logger.warning(f"Group {group_id}: Bot lacks admin rights to send message. Not removing, counted as failed.")
-                failed_group_sends += 1 # Don't remove for unknown errors immediately
-            await asyncio.sleep(0.3) # Short delay
+        for group_id in list(active_groups):
+            await send_to_entity(group_id, is_group=True)
+            await asyncio.sleep(0.35) # Rate limiting for groups
 
-    # Update user and group lists
-    if users_to_remove_post_broadcast:
-        for uid in users_to_remove_post_broadcast: subscribed_users.discard(uid)
+    if removed_users:
+        for uid in removed_users: subscribed_users.discard(uid)
         save_data(subscribed_users, USERS_FILE)
-        logger.info(f"Removed {len(users_to_remove_post_broadcast)} users. New count: {len(subscribed_users)}.")
-    if groups_to_remove_post_broadcast:
-        for gid in groups_to_remove_post_broadcast: active_groups.discard(gid)
+        logger.info(f"Removed {len(removed_users)} users. New count: {len(subscribed_users)}.")
+    if removed_groups:
+        for gid in removed_groups: active_groups.discard(gid)
         save_data(active_groups, GROUPS_FILE)
-        logger.info(f"Removed {len(groups_to_remove_post_broadcast)} groups. New count: {len(active_groups)}.")
+        logger.info(f"Removed {len(removed_groups)} groups. New count: {len(active_groups)}.")
 
-    summary_text = (
-        f"📢 **Broadcast Delivery Report**\n\n"
-        f"👤 **Users Targeted:** {successful_user_sends + failed_user_sends}\n"
-        f"  ✅ Sent successfully: {successful_user_sends}\n"
-        f"  ❌ Failed (will be/are removed): {failed_user_sends}\n"
-        f"  👥 Active users now: {len(subscribed_users)}\n\n"
-        f"🏢 **Groups Targeted:** {successful_group_sends + failed_group_sends}\n"
-        f"  ✅ Sent successfully: {successful_group_sends}\n"
-        f"  ❌ Failed (will be/are removed): {failed_group_sends}\n"
-        f"  🏘️ Active groups now: {len(active_groups)}"
-    )
-    try:
-        await status_update_msg.edit_text(summary_text)
-    except Exception as e_edit:
-        logger.warning(f"Could not edit broadcast status message: {e_edit}")
-        await msg.reply_text(summary_text, quote=True) # Send as new message if edit fails
+    summary_text = (f"📢 **Broadcast Report**\n\n👤 Users: {s_users} sent, {f_users} failed. Now: {len(subscribed_users)}\n"
+                    f"🏢 Groups: {s_groups} sent, {f_groups} failed. Now: {len(active_groups)}")
+    try: await status_update_msg.edit_text(summary_text)
+    except Exception as e_edit: await msg.reply_text(summary_text, quote=True)
+
 
 @app.on_message(filters.command("stats") & filters.user(OWNER_ID))
 async def stats_command_handler(client: Client, msg: Message):
@@ -310,12 +254,12 @@ async def link_handler(client: Client, msg: Message):
         'extract_flat': 'discard_in_playlist', 'source_address': '0.0.0.0',
         'logger': logger 
     }
-    extractor_key = None # Initialize extractor_key
+    extractor_key = "unknown" 
     try:
         with yt_dlp.YoutubeDL(pre_check_ydl_opts) as ydl:
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-        extractor_key = info.get('extractor_key', '').lower() if info else '' # Assign here
-        is_supported = any(target in extractor_key for target in TARGET_EXTRACTORS) if extractor_key else False
+        extractor_key = info.get('extractor_key', '').lower() if info else 'unknown'
+        is_supported = any(target in extractor_key for target in TARGET_EXTRACTORS) if extractor_key != 'unknown' else False
         
         if not info or not extractor_key or not is_supported:
             logger.warning(f"URL '{url}' (extractor: '{extractor_key}') not supported or info extraction failed (pre-check).")
@@ -326,18 +270,18 @@ async def link_handler(client: Client, msg: Message):
 
     except yt_dlp.utils.DownloadError as de:
         de_str = str(de).lower()
-        logger.warning(f"yt-dlp DownloadError during pre-check for '{url}': {de_str[:200]}")
+        logger.warning(f"yt-dlp DownloadError during pre-check for '{url}' (extractor: {extractor_key}): {de_str[:200]}")
         
         proceed_anyway = False
-        current_extractor = extractor_key if extractor_key else "unknown" # Use if available
+        url_lower_for_check = url.lower() # Use lowercase url for site checking
 
-        if (any(site in url.lower() for site in ["instagram.com", "facebook.com", "youtube.com", "youtube.com", "youtu.be"]) and # Added youtube general domains
+        if (any(site in url_lower_for_check for site in ["instagram.com", "facebook.com", "youtube.com", "youtu.be"]) and
             any(err_key in de_str for err_key in ["login required", "unavailable", "restricted video", 
                                                   "not available", "sign in to confirm your age", 
-                                                  "confirm your age", "age gate"])):
-            logger.warning(f"Pre-check for '{current_extractor}' indicated issue possibly solvable by cookies. Proceeding.")
+                                                  "confirm your age", "age gate", "age-restricted"])): # Added "age-restricted"
+            logger.warning(f"Pre-check for '{extractor_key}' indicated issue possibly solvable by cookies. Proceeding.")
             proceed_anyway = True
-        elif "facebook.com" in url.lower() and "unsupported url" in de_str and "/login/" in url: # Check original URL
+        elif "facebook.com" in url_lower_for_check and "unsupported url" in de_str and "/login/" in url: 
             logger.warning("Facebook pre-check: login redirect. Proceeding (cookies might help).")
             proceed_anyway = True
         
@@ -433,21 +377,20 @@ async def button_handler(client: Client, query: CallbackQuery):
     download_path_template = os.path.join(DOWNLOAD_DIR, f"%(title).180s_{original_user_id}_{choice}.%(ext)s")
     main_event_loop = asyncio.get_running_loop()
 
+    # ★★★ format_sort हटाया गया, format स्ट्रिंग पर निर्भर ★★★
     ydl_opts = {
         "outtmpl": download_path_template, "noplaylist": True, "quiet": False, "logger": logger,
         "merge_output_format": "mp4", "retries": 3, "fragment_retries": 10,
-        "retry_sleep_functions": {'http': lambda n: min(n * 2, 30)},
-        "geo_bypass": True, "nocheckcertificate": True, "ignoreerrors": False,
+        "retry_sleep_functions": {'http': lambda n: min(n * 2, 30)}, # Exponential backoff
+        "geo_bypass": True, "nocheckcertificate": True, "ignoreerrors": False, # Don't ignore errors by default
         "source_address": "0.0.0.0", "restrictfilenames": True,
         "progress_hooks": [lambda d: asyncio.run_coroutine_threadsafe(
             progress_hook(d, client, chat_id, interaction_key, original_user_id), main_event_loop
-        ).result(timeout=20)],
+        ).result(timeout=25)], # Timeout बढ़ाया
         "postprocessor_hooks": [lambda d: logger.info(f"Postprocessor (user {original_user_id}, int {interaction_key}): {d['status']}") if d.get('status') != 'started' else None],
-        "format_sort": [
-            'res:1080', 'ext:mp4:m4a', 'res:720', 'ext:mp4:m4a', 'ext:mp4',
-            'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best'
-        ],
-        "prefer_ffmpeg": True, "postprocessors": []
+        # "format_sort": [...] # ★★★ यह लाइन हटाई गई ★★★
+        "prefer_ffmpeg": True, 
+        "postprocessors": [] 
     }
 
     original_downloaded_file = None
@@ -457,13 +400,14 @@ async def button_handler(client: Client, query: CallbackQuery):
     temp_cookie_file_to_use = None; active_cookie_content = None; temp_cookie_filename_for_provider = None
     url_lower = current_url_for_download.lower()
 
+    # ★★★ YouTube डोमेन चेकिंग सुधारा गया ★★★
     if ("instagram.com" in url_lower and INSTAGRAM_COOKIES_CONTENT):
         active_cookie_content, temp_cookie_filename_for_provider = INSTAGRAM_COOKIES_CONTENT, TEMP_INSTA_COOKIES_FILENAME
         logger.info("Instagram link: Will use Insta cookies.")
     elif ("facebook.com" in url_lower and FACEBOOK_COOKIES_CONTENT):
         active_cookie_content, temp_cookie_filename_for_provider = FACEBOOK_COOKIES_CONTENT, TEMP_FB_COOKIES_FILENAME
         logger.info("Facebook link: Will use FB cookies.")
-    elif (any(yt_domain in url_lower for yt_domain in ["youtube.com", "youtube.com", "youtu.be"]) and YOUTUBE_COOKIES_CONTENT):
+    elif (any(yt_domain in url_lower for yt_domain in ["youtube.com/", "youtu.be/"]) and YOUTUBE_COOKIES_CONTENT): # Better check
         active_cookie_content, temp_cookie_filename_for_provider = YOUTUBE_COOKIES_CONTENT, TEMP_YT_COOKIES_FILENAME
         logger.info("YouTube link: Will use YT cookies.")
 
@@ -478,48 +422,58 @@ async def button_handler(client: Client, query: CallbackQuery):
 
     try:
         if choice == "audio":
-            ydl_opts['format'] = "bestaudio[ext=m4a]/bestaudio/best"
+            ydl_opts['format'] = "bestaudio[ext=m4a]/bestaudio/best" # m4a is good source for mp3
             ydl_opts['postprocessors'].append({
                 'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 
-                'preferredquality': '192', 'nopostoverwrites': False
+                'preferredquality': '192', # Standard good quality
+                'nopostoverwrites': False 
             })
-        elif choice in ["video", "both"]: # Video and Both use similar format selection
-            ydl_opts['format'] = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        elif choice in ["video", "both"]:
+             # ★★★ बेहतर क्वालिटी के लिए format स्ट्रिंग ★★★
+            ydl_opts['format'] = (
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/" # 1080p MP4/WebM
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"   # 720p MP4/WebM
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" # Best MP4
+                "bestvideo+bestaudio/best" # Fallback to best available, yt-dlp will merge
+            )
         else:
             await client.edit_message_text(chat_id, interaction_key, "❌ Invalid choice."); return
 
-        logger.info(f"User {original_user_id} selected '{choice}'. URL: {current_url_for_download}. ydl_opts format: {ydl_opts.get('format')}")
+        logger.info(f"User {original_user_id} selected '{choice}'. URL: {current_url_for_download}. ydl_opts format set for choice.")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 await client.edit_message_text(chat_id, interaction_key, "Fetching media info (this might take a moment)... ℹ️")
-                info_dict_for_metadata = await asyncio.to_thread(ydl.extract_info, current_url_for_download, download=False)
+                info_dict_for_metadata = await asyncio.to_thread(ydl.extract_info, current_url_for_download, download=False) # Get metadata first
                 if not info_dict_for_metadata: raise yt_dlp.utils.DownloadError("Failed to extract media info (pre-download).")
                 
                 media_title = clean_filename(info_dict_for_metadata.get('title', 'Untitled_Media'))
                 await client.edit_message_text(chat_id, interaction_key, f"Starting download: `{media_title[:60]}...` 📥\n_(This can take time depending on size/speed)_")
                 
+                # Process and download
                 final_info_after_download = await asyncio.to_thread(ydl.process_ie_result, info_dict_for_metadata, download=True)
 
+                # Determine downloaded file path
                 if final_info_after_download.get('filepath') and os.path.exists(final_info_after_download['filepath']):
                     original_downloaded_file = final_info_after_download['filepath']
                 elif 'requested_downloads' in final_info_after_download and final_info_after_download['requested_downloads']:
                      filepath_from_req = final_info_after_download['requested_downloads'][0].get('filepath')
                      if filepath_from_req and os.path.exists(filepath_from_req):
                          original_downloaded_file = filepath_from_req
-                else:
+                else: # Fallback based on template
                     _title_final = clean_filename(info_dict_for_metadata.get("title", "untitled_dl"))
-                    _ext_final = info_dict_for_metadata.get('ext','mp4')
+                    _ext_final = final_info_after_download.get('ext') or info_dict_for_metadata.get('ext', 'mp4') # Use ext from final_info if available
                     if choice == "audio" and ydl_opts.get('postprocessors') and ydl_opts['postprocessors'][0]['key'] == 'FFmpegExtractAudio':
                          _ext_final = ydl_opts['postprocessors'][0]['preferredcodec']
                     
                     _expected_file_path = os.path.join(DOWNLOAD_DIR, f"{_title_final}_{original_user_id}_{choice}.{_ext_final}")
                     if os.path.exists(_expected_file_path):
                         original_downloaded_file = _expected_file_path
-                    else:
-                        logger.error(f"File '{_expected_file_path}' not found by template. Yt-dlp info: {final_info_after_download.get('filepath', 'N/A')}")
-                        logger.info(f"Debug: Contents of {DOWNLOAD_DIR}: {os.listdir(DOWNLOAD_DIR)}")
-                        raise yt_dlp.utils.DownloadError(f"Could not determine downloaded file path for '{_title_final}'.")
+                    else: # If still not found, list directory for debugging
+                        logger.error(f"File '{_expected_file_path}' not found by template. Yt-dlp provided path: {final_info_after_download.get('filepath', 'N/A')}")
+                        try: logger.info(f"Debug: Contents of {DOWNLOAD_DIR}: {os.listdir(DOWNLOAD_DIR)}")
+                        except Exception as e_ls: logger.error(f"Could not list {DOWNLOAD_DIR}: {e_ls}")
+                        raise yt_dlp.utils.DownloadError(f"Could not reliably determine downloaded file path for '{_title_final}'.")
 
                 if not original_downloaded_file or not os.path.exists(original_downloaded_file):
                     raise yt_dlp.utils.DownloadError(f"File path missing or file does not exist after download attempt: {original_downloaded_file}")
@@ -532,7 +486,7 @@ async def button_handler(client: Client, query: CallbackQuery):
                 reply_error = f"❌ Download Error: `{error_message[:200]}`"
                 if any(key in de_str for key in ["login required", "authentication", "private video"]):
                      reply_error = f"❌ Error: Content private/requires login. Admin: check cookies for this platform."
-                elif any(key in de_str for key in ["age restricted", "age gate", "confirm your age"]):
+                elif any(key in de_str for key in ["age restricted", "age gate", "confirm your age", "sign in to confirm your age"]):
                     reply_error = f"❌ Error: Age restricted. Admin: ensure cookies are from an appropriate account."
                 elif "unsupported url" in de_str: reply_error = f"❌ Error: Unsupported URL."
                 elif "no space left on device" in de_str: reply_error = "❌ Error: No space left on server to download."
@@ -612,10 +566,11 @@ async def button_handler(client: Client, query: CallbackQuery):
             error_reply_text = f"❌ Critical error: `{str(e)[:200]}`. Please try again or report to admin."
             if interaction_key in user_interaction_states and query.message:
                  await client.edit_message_text(chat_id, interaction_key, error_reply_text)
-            elif query.message and query.message.chat:
+            elif query.message and query.message.chat: # Fallback if status message was deleted
                 await client.send_message(chat_id, error_reply_text, reply_to_message_id=interaction_data.get("original_message_id"))
         except Exception as e_reply: logger.error(f"Failed to send critical error message to user {original_user_id}: {e_reply}")
     finally:
+        # Clean up temporary cookie files
         for temp_cookie_file_path_to_clean in [
             os.path.join(DOWNLOAD_DIR, TEMP_INSTA_COOKIES_FILENAME),
             os.path.join(DOWNLOAD_DIR, TEMP_FB_COOKIES_FILENAME),
@@ -628,6 +583,7 @@ async def button_handler(client: Client, query: CallbackQuery):
                 except Exception as e_clean_cookie:
                     logger.error(f"Error deleting temp cookie file {temp_cookie_file_path_to_clean}: {e_clean_cookie}")
 
+        # Clean up downloaded media files
         files_to_clean = set()
         if original_downloaded_file and os.path.exists(original_downloaded_file): files_to_clean.add(original_downloaded_file)
         if extracted_audio_file_for_both and os.path.exists(extracted_audio_file_for_both): files_to_clean.add(extracted_audio_file_for_both)
@@ -637,12 +593,13 @@ async def button_handler(client: Client, query: CallbackQuery):
                 try: os.remove(f_path); logger.info(f"Cleaned media file: {f_path}")
                 except Exception as e_clean: logger.error(f"Error cleaning media file {f_path}: {e_clean}")
         
-        if interaction_key in user_interaction_states:
+        if interaction_key in user_interaction_states: # Clear state at the very end
             user_interaction_states.pop(interaction_key, None)
             logger.info(f"Cleared state for interaction key {interaction_key}")
 
 if __name__ == "__main__":
     logger.info("Bot starting up...")
+    # Startup warnings for missing cookies
     if not INSTAGRAM_COOKIES_CONTENT: logger.warning("INSTAGRAM_COOKIES_CONTENT ENV VAR not set. Some Instagram downloads may fail.")
     if not FACEBOOK_COOKIES_CONTENT: logger.warning("FACEBOOK_COOKIES_CONTENT ENV VAR not set. Some Facebook downloads may fail.")
     if not YOUTUBE_COOKIES_CONTENT: logger.warning("YOUTUBE_COOKIES_CONTENT ENV VAR not set. Some YouTube downloads may fail.")
@@ -658,5 +615,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt: logger.info("Bot stopped by user (KeyboardInterrupt).")
     except Exception as e: logger.critical(f"Unexpected top-level error, bot stopping: {e}", exc_info=True)
     finally: 
-        if app and app.is_running: app.stop()
+        if app and app.is_running: app.stop() # Ensure app is stopped in any case
         logger.info("Script execution finished.")
+
