@@ -40,24 +40,39 @@ try:
     OWNER_ID = int(OWNER_ID_STR)
 except ValueError: raise ValueError("OWNER_ID must be an integer.")
 
-DOWNLOAD_DIR = "./downloads"
-USERS_FILE = "bot_users.json"
-GROUPS_FILE = "bot_groups.json"
-# ★★★ अस्थायी कुकी फ़ाइलों के नाम ★★★
-TEMP_INSTA_COOKIES_FILENAME = "temp_insta_cookies.txt"
-TEMP_FB_COOKIES_FILENAME = "temp_fb_cookies.txt"
-TEMP_YT_COOKIES_FILENAME = "temp_yt_cookies.txt"
+# --- Persistent Storage Configuration for Railway.app ---
+PERSISTENT_DATA_DIR = "/data"  # Railway volume mount path
 
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+DOWNLOAD_DIR = os.path.join(PERSISTENT_DATA_DIR, "downloads")
+USERS_FILE = os.path.join(PERSISTENT_DATA_DIR, "bot_users.json")
+GROUPS_FILE = os.path.join(PERSISTENT_DATA_DIR, "bot_groups.json")
 
-# Setup logging
+# ★★★ अस्थायी कुकी फ़ाइलों के नाम (persistent directory में) ★★★
+TEMP_INSTA_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_insta_cookies.txt")
+TEMP_FB_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_fb_cookies.txt")
+TEMP_YT_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_yt_cookies.txt")
+
+# Setup logging (logger ko directory creation se pehle setup karna behtar hai)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+# Ensure persistent directories exist
+# Railway /data mount point provide karega. Humein uske andar subdirectories banani hongi.
+try:
+    if not os.path.exists(DOWNLOAD_DIR):
+        os.makedirs(DOWNLOAD_DIR)
+        logger.info(f"Created download directory: {DOWNLOAD_DIR}")
+    # Agar PERSISTENT_DATA_DIR (/data) khud nahi banta hai (jo ki Railway ko karna chahiye),
+    # toh file operations fail ho sakte hain. os.makedirs(PERSISTENT_DATA_DIR, exist_ok=True) use kar sakte hain
+    # lekin behtar hai ki Railway mount point sahi se provide kare.
+    # Filhaal, hum maan rahe hain ki /data Railway dwara provide kiya jayega.
+except OSError as e:
+    logger.error(f"Error creating directories within {PERSISTENT_DATA_DIR}: {e}. Check volume permissions and mount on Railway.")
+
 
 # Pyrogram Client Initialization
 app = None
@@ -412,8 +427,15 @@ async def button_handler(client: Client, query: CallbackQuery):
         logger.info("YouTube link: Will use YT cookies.")
 
     if active_cookie_content and temp_cookie_filename_for_provider:
-        temp_cookie_file_to_use = os.path.join(DOWNLOAD_DIR, temp_cookie_filename_for_provider)
+        # temp_cookie_file_to_use is now the full path from the top configuration
+        temp_cookie_file_to_use = temp_cookie_filename_for_provider # Corrected this line
         try:
+            # Ensure the directory for the cookie file exists (PERSISTENT_DATA_DIR)
+            cookie_dir = os.path.dirname(temp_cookie_file_to_use)
+            if not os.path.exists(cookie_dir): # Should be /data, which Railway provides
+                 logger.warning(f"Cookie directory {cookie_dir} does not exist. This might be an issue if it's not the root of the volume.")
+                 # os.makedirs(cookie_dir, exist_ok=True) # Avoid creating /data itself
+
             with open(temp_cookie_file_to_use, 'w', encoding='utf-8') as f_cookie: f_cookie.write(active_cookie_content)
             ydl_opts['cookiefile'] = temp_cookie_file_to_use
             logger.info(f"Using temporary cookie file for download: {temp_cookie_file_to_use}")
@@ -489,7 +511,7 @@ async def button_handler(client: Client, query: CallbackQuery):
                 elif any(key in de_str for key in ["age restricted", "age gate", "confirm your age", "sign in to confirm your age"]):
                     reply_error = f"❌ Error: Age restricted. Admin: ensure cookies are from an appropriate account."
                 elif "unsupported url" in de_str: reply_error = f"❌ Error: Unsupported URL."
-                elif "no space left on device" in de_str: reply_error = "❌ Error: No space left on server to download."
+                elif "no space left on device" in de_str: reply_error = "❌ Error: No space left on server to download." # This error might relate to volume size
                 try: await client.edit_message_text(chat_id, interaction_key, reply_error)
                 except: pass
                 return
@@ -571,12 +593,18 @@ async def button_handler(client: Client, query: CallbackQuery):
         except Exception as e_reply: logger.error(f"Failed to send critical error message to user {original_user_id}: {e_reply}")
     finally:
         # Clean up temporary cookie files
-        for temp_cookie_file_path_to_clean in [
-            os.path.join(DOWNLOAD_DIR, TEMP_INSTA_COOKIES_FILENAME),
-            os.path.join(DOWNLOAD_DIR, TEMP_FB_COOKIES_FILENAME),
-            os.path.join(DOWNLOAD_DIR, TEMP_YT_COOKIES_FILENAME)
-        ]:
-            if temp_cookie_file_path_to_clean and os.path.exists(temp_cookie_file_path_to_clean):
+        # temp_cookie_file_path_to_clean now refers to the full paths defined at the top
+        cookie_files_to_check_and_clean = [
+            TEMP_INSTA_COOKIES_FILENAME,
+            TEMP_FB_COOKIES_FILENAME,
+            TEMP_YT_COOKIES_FILENAME
+        ]
+        for temp_cookie_file_path_to_clean in cookie_files_to_check_and_clean:
+            # Check if the variable holds a valid path (it might be None if cookie content wasn't set)
+            # and if the file actually exists
+            if temp_cookie_file_to_use == temp_cookie_file_path_to_clean and \
+               temp_cookie_file_path_to_clean and \
+               os.path.exists(temp_cookie_file_path_to_clean):
                 try:
                     os.remove(temp_cookie_file_path_to_clean)
                     logger.info(f"Deleted temporary cookie file: {temp_cookie_file_path_to_clean}")
