@@ -40,35 +40,24 @@ try:
     OWNER_ID = int(OWNER_ID_STR)
 except ValueError: raise ValueError("OWNER_ID must be an integer.")
 
-# --- Persistent Storage Configuration for Railway.app ---
-PERSISTENT_DATA_DIR = "/data"  # Railway volume mount path
+DOWNLOAD_DIR = "./downloads"
+USERS_FILE = "bot_users.json"
+GROUPS_FILE = "bot_groups.json"
+# ★★★ अस्थायी कुकी फ़ाइलों के नाम ★★★
+TEMP_INSTA_COOKIES_FILENAME = "temp_insta_cookies.txt"
+TEMP_FB_COOKIES_FILENAME = "temp_fb_cookies.txt"
+TEMP_YT_COOKIES_FILENAME = "temp_yt_cookies.txt"
 
-DOWNLOAD_DIR = os.path.join(PERSISTENT_DATA_DIR, "downloads")
-USERS_FILE = os.path.join(PERSISTENT_DATA_DIR, "bot_users.json")
-GROUPS_FILE = os.path.join(PERSISTENT_DATA_DIR, "bot_groups.json")
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
-# ★★★ अस्थायी कुकी फ़ाइलों के नाम (persistent directory में) ★★★
-TEMP_INSTA_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_insta_cookies.txt")
-TEMP_FB_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_fb_cookies.txt")
-TEMP_YT_COOKIES_FILENAME = os.path.join(PERSISTENT_DATA_DIR, "temp_yt_cookies.txt")
-
-# Setup logging (logger ko directory creation se pehle setup karna behtar hai)
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-
-# Ensure persistent directories exist
-# Railway /data mount point provide karega. Humein uske andar subdirectories banani hongi.
-try:
-    if not os.path.exists(DOWNLOAD_DIR):
-        os.makedirs(DOWNLOAD_DIR)
-        logger.info(f"Created download directory: {DOWNLOAD_DIR}")
-except OSError as e:
-    logger.error(f"Error creating directories within {PERSISTENT_DATA_DIR}: {e}. Check volume permissions and mount on Railway.")
-
 
 # Pyrogram Client Initialization
 app = None
@@ -82,39 +71,19 @@ else:
     logger.critical("CRITICAL ERROR: Neither STRING_SESSION nor BOT_TOKEN is available.")
     exit()
 
-# --- Broadcast, User, Group Management (with Detailed Logging & Atomic Save) ---
+# --- Broadcast, User, Group Management ---
 def load_data(file_path):
-    logger.info(f"[LOAD_DATA] Attempting to load data from: {file_path}")
     if os.path.exists(file_path):
-        logger.info(f"[LOAD_DATA] File exists: {file_path}")
         try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-                if not content.strip(): # Check if file is empty
-                    logger.warning(f"[LOAD_DATA] File is empty: {file_path}. Returning empty set.")
-                    return set()
-                data = set(json.loads(content)) # Use json.loads for string content
-                logger.info(f"[LOAD_DATA] Successfully loaded {len(data)} items from {file_path}. First few: {list(data)[:3]}")
-                return data
-        except json.JSONDecodeError as e:
-            logger.error(f"[LOAD_DATA] Error decoding JSON from {file_path}: {e}. File content might be corrupted.")
-        except Exception as e: # Catch other potential errors during load
-            logger.error(f"[LOAD_DATA] Unexpected error loading data from {file_path}: {e}")
-    else:
-        logger.info(f"[LOAD_DATA] File not found: {file_path}. Returning empty set.")
+            with open(file_path, 'r') as f: return set(json.load(f))
+        except json.JSONDecodeError:
+            logger.error(f"Error decoding JSON from {file_path}. Initializing empty set.")
     return set()
 
 def save_data(data_set, file_path):
-    logger.info(f"[SAVE_DATA] Attempting to save {len(data_set)} items to: {file_path}. First few: {list(data_set)[:3]}")
     try:
-        # Temporary file save and rename for atomicity (better for preventing corruption)
-        temp_file_path = file_path + ".tmp"
-        with open(temp_file_path, 'w') as f:
-            json.dump(list(data_set), f, indent=4) # Added indent for readability
-        os.replace(temp_file_path, file_path) # Atomic rename
-        logger.info(f"[SAVE_DATA] Successfully saved data to {file_path}")
-    except Exception as e:
-        logger.error(f"[SAVE_DATA] Error saving data to {file_path}: {e}")
+        with open(file_path, 'w') as f: json.dump(list(data_set), f) # Convert set to list for JSON
+    except Exception as e: logger.error(f"Error saving to {file_path}: {e}")
 
 subscribed_users = load_data(USERS_FILE)
 active_groups = load_data(GROUPS_FILE)
@@ -122,7 +91,7 @@ active_groups = load_data(GROUPS_FILE)
 async def add_chat_to_tracking(chat_id: int, chat_type: ChatType):
     if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP] and chat_id not in active_groups:
         active_groups.add(chat_id)
-        save_data(active_groups, GROUPS_FILE) # This will now use the atomic save
+        save_data(active_groups, GROUPS_FILE)
         logger.info(f"New group chat {chat_id} added. Total groups: {len(active_groups)}")
 
 # --- Constants & Buttons ---
@@ -151,8 +120,7 @@ async def start_command(client: Client, msg: Message):
     logger.info(f"Received /start from {user_id} in {chat_id} ({msg.chat.type})")
     await add_chat_to_tracking(chat_id, msg.chat.type)
     if msg.chat.type == ChatType.PRIVATE and user_id not in subscribed_users:
-        subscribed_users.add(user_id)
-        save_data(subscribed_users, USERS_FILE) # This will now use the atomic save
+        subscribed_users.add(user_id); save_data(subscribed_users, USERS_FILE)
         logger.info(f"New user {user_id} added. Total: {len(subscribed_users)}")
     start_text = (f"🛸 **Welcome, {msg.from_user.mention}!**\n\n⚡ I'm a multi-platform Media Extractor Bot.\n"
                   "I can attempt to download from **YouTube, Instagram, Facebook**.\n"
@@ -233,26 +201,24 @@ async def broadcast_command_handler(client: Client, msg: Message):
 
     if subscribed_users:
         logger.info(f"Broadcasting to {len(subscribed_users)} users...")
-        for user_id in list(subscribed_users): # Iterate over a copy of the set
+        for user_id in list(subscribed_users):
             await send_to_entity(user_id, is_group=False)
             await asyncio.sleep(0.25) # Rate limiting
 
     if active_groups:
         logger.info(f"Broadcasting to {len(active_groups)} groups...")
-        for group_id in list(active_groups): # Iterate over a copy of the set
+        for group_id in list(active_groups):
             await send_to_entity(group_id, is_group=True)
             await asyncio.sleep(0.35) # Rate limiting for groups
 
     if removed_users:
-        logger.info(f"Removing {len(removed_users)} failed users from subscribed_users set.")
         for uid in removed_users: subscribed_users.discard(uid)
-        save_data(subscribed_users, USERS_FILE) # Save after modification
-        logger.info(f"Removed users. New count: {len(subscribed_users)}.")
+        save_data(subscribed_users, USERS_FILE)
+        logger.info(f"Removed {len(removed_users)} users. New count: {len(subscribed_users)}.")
     if removed_groups:
-        logger.info(f"Removing {len(removed_groups)} failed groups from active_groups set.")
         for gid in removed_groups: active_groups.discard(gid)
-        save_data(active_groups, GROUPS_FILE) # Save after modification
-        logger.info(f"Removed groups. New count: {len(active_groups)}.")
+        save_data(active_groups, GROUPS_FILE)
+        logger.info(f"Removed {len(removed_groups)} groups. New count: {len(active_groups)}.")
 
     summary_text = (f"📢 **Broadcast Report**\n\n👤 Users: {s_users} sent, {f_users} failed. Now: {len(subscribed_users)}\n"
                     f"🏢 Groups: {s_groups} sent, {f_groups} failed. Now: {len(active_groups)}")
@@ -411,16 +377,18 @@ async def button_handler(client: Client, query: CallbackQuery):
     download_path_template = os.path.join(DOWNLOAD_DIR, f"%(title).180s_{original_user_id}_{choice}.%(ext)s")
     main_event_loop = asyncio.get_running_loop()
 
+    # ★★★ format_sort हटाया गया, format स्ट्रिंग पर निर्भर ★★★
     ydl_opts = {
         "outtmpl": download_path_template, "noplaylist": True, "quiet": False, "logger": logger,
         "merge_output_format": "mp4", "retries": 3, "fragment_retries": 10,
-        "retry_sleep_functions": {'http': lambda n: min(n * 2, 30)}, 
-        "geo_bypass": True, "nocheckcertificate": True, "ignoreerrors": False, 
+        "retry_sleep_functions": {'http': lambda n: min(n * 2, 30)}, # Exponential backoff
+        "geo_bypass": True, "nocheckcertificate": True, "ignoreerrors": False, # Don't ignore errors by default
         "source_address": "0.0.0.0", "restrictfilenames": True,
         "progress_hooks": [lambda d: asyncio.run_coroutine_threadsafe(
             progress_hook(d, client, chat_id, interaction_key, original_user_id), main_event_loop
-        ).result(timeout=25)], 
+        ).result(timeout=25)], # Timeout बढ़ाया
         "postprocessor_hooks": [lambda d: logger.info(f"Postprocessor (user {original_user_id}, int {interaction_key}): {d['status']}") if d.get('status') != 'started' else None],
+        # "format_sort": [...] # ★★★ यह लाइन हटाई गई ★★★
         "prefer_ffmpeg": True, 
         "postprocessors": [] 
     }
@@ -429,49 +397,44 @@ async def button_handler(client: Client, query: CallbackQuery):
     extracted_audio_file_for_both = None
     info_dict_for_metadata = None
     
-    temp_cookie_file_to_use = None; active_cookie_content = None
-    # temp_cookie_filename_for_provider was used to store just the filename,
-    # now the full path variables (TEMP_INSTA_COOKIES_FILENAME etc.) are used directly.
-    
+    temp_cookie_file_to_use = None; active_cookie_content = None; temp_cookie_filename_for_provider = None
     url_lower = current_url_for_download.lower()
 
+    # ★★★ YouTube डोमेन चेकिंग सुधारा गया ★★★
     if ("instagram.com" in url_lower and INSTAGRAM_COOKIES_CONTENT):
-        active_cookie_content = INSTAGRAM_COOKIES_CONTENT
-        temp_cookie_file_to_use = TEMP_INSTA_COOKIES_FILENAME # Use full path directly
+        active_cookie_content, temp_cookie_filename_for_provider = INSTAGRAM_COOKIES_CONTENT, TEMP_INSTA_COOKIES_FILENAME
         logger.info("Instagram link: Will use Insta cookies.")
     elif ("facebook.com" in url_lower and FACEBOOK_COOKIES_CONTENT):
-        active_cookie_content = FACEBOOK_COOKIES_CONTENT
-        temp_cookie_file_to_use = TEMP_FB_COOKIES_FILENAME # Use full path directly
+        active_cookie_content, temp_cookie_filename_for_provider = FACEBOOK_COOKIES_CONTENT, TEMP_FB_COOKIES_FILENAME
         logger.info("Facebook link: Will use FB cookies.")
-    elif (any(yt_domain in url_lower for yt_domain in ["youtube.com/", "youtu.be/", "youtube.com", "youtu.be"]) and YOUTUBE_COOKIES_CONTENT): # Added common YT domains
-        active_cookie_content = YOUTUBE_COOKIES_CONTENT
-        temp_cookie_file_to_use = TEMP_YT_COOKIES_FILENAME # Use full path directly
+    elif (any(yt_domain in url_lower for yt_domain in ["youtube.com/", "youtu.be/"]) and YOUTUBE_COOKIES_CONTENT): # Better check
+        active_cookie_content, temp_cookie_filename_for_provider = YOUTUBE_COOKIES_CONTENT, TEMP_YT_COOKIES_FILENAME
         logger.info("YouTube link: Will use YT cookies.")
 
-    if active_cookie_content and temp_cookie_file_to_use:
+    if active_cookie_content and temp_cookie_filename_for_provider:
+        temp_cookie_file_to_use = os.path.join(DOWNLOAD_DIR, temp_cookie_filename_for_provider)
         try:
-            # PERSISTENT_DATA_DIR (/data) should exist due to Railway volume mount.
-            # No need to create os.path.dirname(temp_cookie_file_to_use) if it's /data itself.
             with open(temp_cookie_file_to_use, 'w', encoding='utf-8') as f_cookie: f_cookie.write(active_cookie_content)
             ydl_opts['cookiefile'] = temp_cookie_file_to_use
             logger.info(f"Using temporary cookie file for download: {temp_cookie_file_to_use}")
         except Exception as e_cookie:
-            logger.error(f"Failed to create/write temp cookie file {temp_cookie_file_to_use}: {e_cookie}"); temp_cookie_file_to_use = None # Ensure it's None if write fails
+            logger.error(f"Failed to create/write temp cookie file {temp_cookie_file_to_use}: {e_cookie}"); temp_cookie_file_to_use = None
 
     try:
         if choice == "audio":
-            ydl_opts['format'] = "bestaudio[ext=m4a]/bestaudio/best" 
+            ydl_opts['format'] = "bestaudio[ext=m4a]/bestaudio/best" # m4a is good source for mp3
             ydl_opts['postprocessors'].append({
                 'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 
-                'preferredquality': '192', 
+                'preferredquality': '192', # Standard good quality
                 'nopostoverwrites': False 
             })
         elif choice in ["video", "both"]:
+             # ★★★ बेहतर क्वालिटी के लिए format स्ट्रिंग ★★★
             ydl_opts['format'] = (
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/" 
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"   
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" 
-                "bestvideo+bestaudio/best" 
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/" # 1080p MP4/WebM
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"   # 720p MP4/WebM
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" # Best MP4
+                "bestvideo+bestaudio/best" # Fallback to best available, yt-dlp will merge
             )
         else:
             await client.edit_message_text(chat_id, interaction_key, "❌ Invalid choice."); return
@@ -481,30 +444,32 @@ async def button_handler(client: Client, query: CallbackQuery):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 await client.edit_message_text(chat_id, interaction_key, "Fetching media info (this might take a moment)... ℹ️")
-                info_dict_for_metadata = await asyncio.to_thread(ydl.extract_info, current_url_for_download, download=False) 
+                info_dict_for_metadata = await asyncio.to_thread(ydl.extract_info, current_url_for_download, download=False) # Get metadata first
                 if not info_dict_for_metadata: raise yt_dlp.utils.DownloadError("Failed to extract media info (pre-download).")
                 
                 media_title = clean_filename(info_dict_for_metadata.get('title', 'Untitled_Media'))
                 await client.edit_message_text(chat_id, interaction_key, f"Starting download: `{media_title[:60]}...` 📥\n_(This can take time depending on size/speed)_")
                 
+                # Process and download
                 final_info_after_download = await asyncio.to_thread(ydl.process_ie_result, info_dict_for_metadata, download=True)
 
+                # Determine downloaded file path
                 if final_info_after_download.get('filepath') and os.path.exists(final_info_after_download['filepath']):
                     original_downloaded_file = final_info_after_download['filepath']
                 elif 'requested_downloads' in final_info_after_download and final_info_after_download['requested_downloads']:
                      filepath_from_req = final_info_after_download['requested_downloads'][0].get('filepath')
                      if filepath_from_req and os.path.exists(filepath_from_req):
                          original_downloaded_file = filepath_from_req
-                else: 
+                else: # Fallback based on template
                     _title_final = clean_filename(info_dict_for_metadata.get("title", "untitled_dl"))
-                    _ext_final = final_info_after_download.get('ext') or info_dict_for_metadata.get('ext', 'mp4') 
+                    _ext_final = final_info_after_download.get('ext') or info_dict_for_metadata.get('ext', 'mp4') # Use ext from final_info if available
                     if choice == "audio" and ydl_opts.get('postprocessors') and ydl_opts['postprocessors'][0]['key'] == 'FFmpegExtractAudio':
                          _ext_final = ydl_opts['postprocessors'][0]['preferredcodec']
                     
                     _expected_file_path = os.path.join(DOWNLOAD_DIR, f"{_title_final}_{original_user_id}_{choice}.{_ext_final}")
                     if os.path.exists(_expected_file_path):
                         original_downloaded_file = _expected_file_path
-                    else: 
+                    else: # If still not found, list directory for debugging
                         logger.error(f"File '{_expected_file_path}' not found by template. Yt-dlp provided path: {final_info_after_download.get('filepath', 'N/A')}")
                         try: logger.info(f"Debug: Contents of {DOWNLOAD_DIR}: {os.listdir(DOWNLOAD_DIR)}")
                         except Exception as e_ls: logger.error(f"Could not list {DOWNLOAD_DIR}: {e_ls}")
@@ -524,7 +489,7 @@ async def button_handler(client: Client, query: CallbackQuery):
                 elif any(key in de_str for key in ["age restricted", "age gate", "confirm your age", "sign in to confirm your age"]):
                     reply_error = f"❌ Error: Age restricted. Admin: ensure cookies are from an appropriate account."
                 elif "unsupported url" in de_str: reply_error = f"❌ Error: Unsupported URL."
-                elif "no space left on device" in de_str: reply_error = f"❌ Error: No space left on server to download. Volume might be full." 
+                elif "no space left on device" in de_str: reply_error = "❌ Error: No space left on server to download."
                 try: await client.edit_message_text(chat_id, interaction_key, reply_error)
                 except: pass
                 return
@@ -601,17 +566,22 @@ async def button_handler(client: Client, query: CallbackQuery):
             error_reply_text = f"❌ Critical error: `{str(e)[:200]}`. Please try again or report to admin."
             if interaction_key in user_interaction_states and query.message:
                  await client.edit_message_text(chat_id, interaction_key, error_reply_text)
-            elif query.message and query.message.chat: 
+            elif query.message and query.message.chat: # Fallback if status message was deleted
                 await client.send_message(chat_id, error_reply_text, reply_to_message_id=interaction_data.get("original_message_id"))
         except Exception as e_reply: logger.error(f"Failed to send critical error message to user {original_user_id}: {e_reply}")
     finally:
-        # Clean up temporary cookie files that were actually used in this interaction
-        if temp_cookie_file_to_use and os.path.exists(temp_cookie_file_to_use):
-            try:
-                os.remove(temp_cookie_file_to_use)
-                logger.info(f"Deleted temporary cookie file: {temp_cookie_file_to_use}")
-            except Exception as e_clean_cookie:
-                logger.error(f"Error deleting temp cookie file {temp_cookie_file_to_use}: {e_clean_cookie}")
+        # Clean up temporary cookie files
+        for temp_cookie_file_path_to_clean in [
+            os.path.join(DOWNLOAD_DIR, TEMP_INSTA_COOKIES_FILENAME),
+            os.path.join(DOWNLOAD_DIR, TEMP_FB_COOKIES_FILENAME),
+            os.path.join(DOWNLOAD_DIR, TEMP_YT_COOKIES_FILENAME)
+        ]:
+            if temp_cookie_file_path_to_clean and os.path.exists(temp_cookie_file_path_to_clean):
+                try:
+                    os.remove(temp_cookie_file_path_to_clean)
+                    logger.info(f"Deleted temporary cookie file: {temp_cookie_file_path_to_clean}")
+                except Exception as e_clean_cookie:
+                    logger.error(f"Error deleting temp cookie file {temp_cookie_file_path_to_clean}: {e_clean_cookie}")
 
         # Clean up downloaded media files
         files_to_clean = set()
@@ -623,7 +593,7 @@ async def button_handler(client: Client, query: CallbackQuery):
                 try: os.remove(f_path); logger.info(f"Cleaned media file: {f_path}")
                 except Exception as e_clean: logger.error(f"Error cleaning media file {f_path}: {e_clean}")
         
-        if interaction_key in user_interaction_states: 
+        if interaction_key in user_interaction_states: # Clear state at the very end
             user_interaction_states.pop(interaction_key, None)
             logger.info(f"Cleared state for interaction key {interaction_key}")
 
@@ -637,16 +607,14 @@ if __name__ == "__main__":
     try:
         if app:
             app.start(); logger.info("Pyrogram Client started. Bot is now online!"); idle()
-            # These lines will only be reached after idle() is stopped (e.g., by SIGTERM)
-            logger.info("Bot received stop signal (from idle), shutting down...")
-            # app.stop() # app.stop() is called by Pyrogram's idle() handler internally or on SIGINT/SIGTERM
+            logger.info("Bot received stop signal, shutting down..."); app.stop(); logger.info("Bot has been stopped gracefully.")
+        else: logger.critical("CRITICAL ERROR: Pyrogram Client (app) was not initialized.")
     except RuntimeError as e:
         if "another loop" in str(e).lower() or "different loop" in str(e).lower(): logger.warning(f"Asyncio loop error during shutdown (often ignorable): {e}")
         else: logger.critical(f"Runtime error: {e}", exc_info=True)
     except KeyboardInterrupt: logger.info("Bot stopped by user (KeyboardInterrupt).")
     except Exception as e: logger.critical(f"Unexpected top-level error, bot stopping: {e}", exc_info=True)
     finally: 
-        if app and app.is_connected: # Check if connected (more reliable than is_running after stop signals)
-            logger.info("Ensuring Pyrogram Client is stopped in finally block...")
-            app.stop() # Explicitly stop if it's still connected
+        if app and app.is_running: app.stop() # Ensure app is stopped in any case
         logger.info("Script execution finished.")
+
