@@ -95,7 +95,7 @@ async def add_chat_to_tracking(chat_id: int, chat_type: ChatType):
         logger.info(f"New group chat {chat_id} added. Total groups: {len(active_groups)}")
 
 # --- Constants & Buttons ---
-WHOAMI_BTN = InlineKeyboardButton("WHO I AM? 👤", url="https://t.me/MeNetwork108/14")
+WHOAMI_BTN = InlineKeyboardButton("WHO I AM? 👤", url="https://t.me/Our_network108")
 CREATOR_BTN = InlineKeyboardButton("Made By ❤️", url="https://t.me/Hindu_papa")
 TARGET_EXTRACTORS = ['youtube', 'instagram', 'facebook', 'fb', 'soundcloud']
 
